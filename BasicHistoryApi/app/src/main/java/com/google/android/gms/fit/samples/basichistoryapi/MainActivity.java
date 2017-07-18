@@ -53,6 +53,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static android.content.ContentValues.TAG;
 import static java.text.DateFormat.getDateInstance;
 import static java.text.DateFormat.getTimeInstance;
 
@@ -64,7 +65,7 @@ import static java.text.DateFormat.getTimeInstance;
 public class MainActivity extends AppCompatActivity {
     public static final String TAG = "BasicHistoryApi";
     private static final int REQUEST_OAUTH = 1;
-    private static final String DATE_FORMAT = "yyyy.MM.dd HH:mm:ss";
+    private static final String DATE_FORMAT = "dd.MM.yyyy HH:mm:ss";
 
     /**
      *  Track whether an authorization activity is stacking over the current activity, i.e. when
@@ -76,14 +77,18 @@ public class MainActivity extends AppCompatActivity {
 
     public static GoogleApiClient mClient = null;
 
+    public float averageWeightPrev = 0;
+    public float averageWeightPrevPrev = 0;
+    public long refDate = 0;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
         // This method sets up our custom logger, which will print all log messages to the device
         // screen, as well as to adb logcat.
         initializeLogging();
-
         if (savedInstanceState != null) {
             authInProgress = savedInstanceState.getBoolean(AUTH_PENDING);
         }
@@ -102,146 +107,51 @@ public class MainActivity extends AppCompatActivity {
     private void buildFitnessClient() {
         // Create the Google API Client
         mClient = new GoogleApiClient.Builder(this)
-                .addApi(Fitness.HISTORY_API)
-                .addScope(new Scope(Scopes.FITNESS_ACTIVITY_READ_WRITE))
-                .addConnectionCallbacks(
-                        new GoogleApiClient.ConnectionCallbacks() {
-                            @Override
-                            public void onConnected(Bundle bundle) {
-                                Log.i(TAG, "Connected!!!");
-                                // Now you can make calls to the Fitness APIs.  What to do?
-                                // Look at some data!!
-                                new InsertAndVerifyDataTask().execute();
-                            }
+            .addApi(Fitness.HISTORY_API)
+            .addScope(new Scope(Scopes.FITNESS_BODY_READ))
+            .addConnectionCallbacks(
+                    new GoogleApiClient.ConnectionCallbacks() {
+                        @Override
+                        public void onConnected(Bundle bundle) {
+                            Log.i(TAG, "Connected!!!");
+                            // Now you can make calls to the Fitness APIs.  What to do?
+                            // Look at some data!!
 
-                            @Override
-                            public void onConnectionSuspended(int i) {
-                                // If your connection to the sensor gets lost at some point,
-                                // you'll be able to determine the reason and react to it here.
-                                if (i == ConnectionCallbacks.CAUSE_NETWORK_LOST) {
-                                    Log.i(TAG, "Connection lost.  Cause: Network Lost.");
-                                } else if (i == ConnectionCallbacks.CAUSE_SERVICE_DISCONNECTED) {
-                                    Log.i(TAG, "Connection lost.  Reason: Service Disconnected");
-                                }
+                            new ReadDataTask().execute();
+                        }
+
+                        @Override
+                        public void onConnectionSuspended(int i) {
+                            // If your connection to the sensor gets lost at some point,
+                            // you'll be able to determine the reason and react to it here.
+                            if (i == ConnectionCallbacks.CAUSE_NETWORK_LOST) {
+                                Log.i(TAG, "Connection lost.  Cause: Network Lost.");
+                            } else if (i == ConnectionCallbacks.CAUSE_SERVICE_DISCONNECTED) {
+                                Log.i(TAG, "Connection lost.  Reason: Service Disconnected");
                             }
                         }
-                )
-                .enableAutoManage(this, 0, new GoogleApiClient.OnConnectionFailedListener() {
-                    @Override
-                    public void onConnectionFailed(ConnectionResult result) {
-                        Log.i(TAG, "Google Play services connection failed. Cause: " +
-                                result.toString());
-                        Snackbar.make(
-                                MainActivity.this.findViewById(R.id.main_activity_view),
-                                "Exception while connecting to Google Play services: " +
-                                        result.getErrorMessage(),
-                                Snackbar.LENGTH_INDEFINITE).show();
                     }
-                })
-                .build();
+            )
+            .enableAutoManage(this, 0, new GoogleApiClient.OnConnectionFailedListener() {
+                @Override
+                public void onConnectionFailed(ConnectionResult result) {
+                    Log.i(TAG, "Google Play services connection failed. Cause: " +
+                            result.toString());
+                    Snackbar.make(
+                            MainActivity.this.findViewById(R.id.main_activity_view),
+                            "Exception while connecting to Google Play services: " +
+                                    result.getErrorMessage(),
+                            Snackbar.LENGTH_INDEFINITE).show();
+                }
+            })
+            .build();
     }
 
-    /**
-     *  Create a {@link DataSet} to insert data into the History API, and
-     *  then create and execute a {@link DataReadRequest} to verify the insertion succeeded.
-     *  By using an {@link AsyncTask}, we can schedule synchronous calls, so that we can query for
-     *  data after confirming that our insert was successful. Using asynchronous calls and callbacks
-     *  would not guarantee that the insertion had concluded before the read request was made.
-     *  An example of an asynchronous call using a callback can be found in the example
-     *  on deleting data below.
-     */
-    private class InsertAndVerifyDataTask extends AsyncTask<Void, Void, Void> {
-        protected Void doInBackground(Void... params) {
-            // Create a new dataset and insertion request.
-            DataSet dataSet = insertFitnessData();
-
-            // [START insert_dataset]
-            // Then, invoke the History API to insert the data and await the result, which is
-            // possible here because of the {@link AsyncTask}. Always include a timeout when calling
-            // await() to prevent hanging that can occur from the service being shutdown because
-            // of low memory or other conditions.
-            Log.i(TAG, "Inserting the dataset in the History API.");
-            com.google.android.gms.common.api.Status insertStatus =
-                    Fitness.HistoryApi.insertData(mClient, dataSet)
-                            .await(1, TimeUnit.MINUTES);
-
-            // Before querying the data, check to see if the insertion succeeded.
-            if (!insertStatus.isSuccess()) {
-                Log.i(TAG, "There was a problem inserting the dataset.");
-                return null;
-            }
-
-            // At this point, the data has been inserted and can be read.
-            Log.i(TAG, "Data insert was successful!");
-            // [END insert_dataset]
-
-            // Begin by creating the query.
-            DataReadRequest readRequest = queryFitnessData();
-
-            // [START read_dataset]
-            // Invoke the History API to fetch the data with the query and await the result of
-            // the read request.
-            DataReadResult dataReadResult =
-                    Fitness.HistoryApi.readData(mClient, readRequest).await(1, TimeUnit.MINUTES);
-            // [END read_dataset]
-
-            // For the sake of the sample, we'll print the data so we can see what we just added.
-            // In general, logging fitness information should be avoided for privacy reasons.
-            printData(dataReadResult);
-
-            return null;
-        }
-    }
-
-    /**
-     * Create and return a {@link DataSet} of step count data for insertion using the History API.
-     */
-    private DataSet insertFitnessData() {
-        Log.i(TAG, "Creating a new data insert request.");
-
-        // [START build_insert_data_request]
-        // Set a start and end time for our data, using a start time of 1 hour before this moment.
-        Calendar cal = Calendar.getInstance();
-        Date now = new Date();
-        cal.setTime(now);
-        long endTime = cal.getTimeInMillis();
-        cal.add(Calendar.HOUR_OF_DAY, -1);
-        long startTime = cal.getTimeInMillis();
-
-        // Create a data source
-        DataSource dataSource = new DataSource.Builder()
-                .setAppPackageName(this)
-                .setDataType(DataType.TYPE_STEP_COUNT_DELTA)
-                .setStreamName(TAG + " - step count")
-                .setType(DataSource.TYPE_RAW)
-                .build();
-
-        // Create a data set
-        int stepCountDelta = 950;
-        DataSet dataSet = DataSet.create(dataSource);
-        // For each data point, specify a start time, end time, and the data value -- in this case,
-        // the number of new steps.
-        DataPoint dataPoint = dataSet.createDataPoint()
-                .setTimeInterval(startTime, endTime, TimeUnit.MILLISECONDS);
-        dataPoint.getValue(Field.FIELD_STEPS).setInt(stepCountDelta);
-        dataSet.add(dataPoint);
-        // [END build_insert_data_request]
-
-        return dataSet;
-    }
 
     /**
      * Return a {@link DataReadRequest} for all step count changes in the past week.
      */
-    public static DataReadRequest queryFitnessData() {
-        // [START build_read_data_request]
-        // Setting a start and end date using a range of 1 week before this moment.
-        Calendar cal = Calendar.getInstance();
-        Date now = new Date();
-        cal.setTime(now);
-        long endTime = cal.getTimeInMillis();
-        cal.add(Calendar.WEEK_OF_YEAR, -1);
-        long startTime = cal.getTimeInMillis();
+    public static DataReadRequest queryFitnessData(long startTime, long endTime) {
 
         java.text.DateFormat dateFormat = getDateInstance();
         Log.i(TAG, "Range Start: " + dateFormat.format(startTime));
@@ -253,15 +163,18 @@ public class MainActivity extends AppCompatActivity {
                 // In this example, it's very unlikely that the request is for several hundred
                 // datapoints each consisting of a few steps and a timestamp.  The more likely
                 // scenario is wanting to see how many steps were walked per day, for 7 days.
-                .aggregate(DataType.TYPE_STEP_COUNT_DELTA, DataType.AGGREGATE_STEP_COUNT_DELTA)
+                //.aggregate(DataType.TYPE_STEP_COUNT_DELTA, DataType.AGGREGATE_STEP_COUNT_DELTA)
                         // Analogous to a "Group By" in SQL, defines how data should be aggregated.
                         // bucketByTime allows for a time span, whereas bucketBySession would allow
                         // bucketing by "sessions", which would need to be defined in code.
-                .bucketByTime(1, TimeUnit.DAYS)
+                //.bucketByTime(1, TimeUnit.DAYS)
+                .read(DataType.TYPE_WEIGHT)
                 .setTimeRange(startTime, endTime, TimeUnit.MILLISECONDS)
                 .build();
-        // [END build_read_data_request]
 
+        Log.i(TAG, "Request created!");
+
+        // [END build_read_data_request]
         return readRequest;
     }
 
@@ -274,32 +187,24 @@ public class MainActivity extends AppCompatActivity {
      * directory to avoid exposing it to other applications.
      */
     public static void printData(DataReadResult dataReadResult) {
-        // [START parse_read_data_result]
-        // If the DataReadRequest object specified aggregated data, dataReadResult will be returned
-        // as buckets containing DataSets, instead of just DataSets.
-        if (dataReadResult.getBuckets().size() > 0) {
-            Log.i(TAG, "Number of returned buckets of DataSets is: "
-                    + dataReadResult.getBuckets().size());
-            for (Bucket bucket : dataReadResult.getBuckets()) {
-                List<DataSet> dataSets = bucket.getDataSets();
-                for (DataSet dataSet : dataSets) {
-                    dumpDataSet(dataSet);
-                }
-            }
-        } else if (dataReadResult.getDataSets().size() > 0) {
-            Log.i(TAG, "Number of returned DataSets is: "
-                    + dataReadResult.getDataSets().size());
-            for (DataSet dataSet : dataReadResult.getDataSets()) {
-                dumpDataSet(dataSet);
-            }
+        Log.i(TAG, "Number of returned DataSets is: " + dataReadResult.getDataSets().size());
+        for (DataSet dataSet : dataReadResult.getDataSets()) {
+            dumpDataSet(dataSet);
         }
-        // [END parse_read_data_result]
+
     }
 
     // [START parse_dataset]
     private static void dumpDataSet(DataSet dataSet) {
+
         Log.i(TAG, "Data returned for Data type: " + dataSet.getDataType().getName());
+
         DateFormat dateFormat = getTimeInstance();
+
+        Log.i(TAG, "DEBUG String: " + dataSet.getDataSource().toDebugString());
+        Log.i(TAG, "Number of Datapoints: " + dataSet.getDataPoints().size());
+
+
 
         for (DataPoint dp : dataSet.getDataPoints()) {
             Log.i(TAG, "Data point:");
@@ -314,45 +219,6 @@ public class MainActivity extends AppCompatActivity {
     }
     // [END parse_dataset]
 
-    /**
-     * Delete a {@link DataSet} from the History API. In this example, we delete all
-     * step count data for the past 24 hours.
-     */
-    private void deleteData() {
-        Log.i(TAG, "Deleting today's step count data.");
-
-        // [START delete_dataset]
-        // Set a start and end time for our data, using a start time of 1 day before this moment.
-        Calendar cal = Calendar.getInstance();
-        Date now = new Date();
-        cal.setTime(now);
-        long endTime = cal.getTimeInMillis();
-        cal.add(Calendar.DAY_OF_YEAR, -1);
-        long startTime = cal.getTimeInMillis();
-
-        //  Create a delete request object, providing a data type and a time interval
-        DataDeleteRequest request = new DataDeleteRequest.Builder()
-                .setTimeInterval(startTime, endTime, TimeUnit.MILLISECONDS)
-                .addDataType(DataType.TYPE_STEP_COUNT_DELTA)
-                .build();
-
-        // Invoke the History API with the Google API client object and delete request, and then
-        // specify a callback that will check the result.
-        Fitness.HistoryApi.deleteData(mClient, request)
-                .setResultCallback(new ResultCallback<Status>() {
-                    @Override
-                    public void onResult(Status status) {
-                        if (status.isSuccess()) {
-                            Log.i(TAG, "Successfully deleted today's step count data.");
-                        } else {
-                            // The deletion will fail if the requesting app tries to delete data
-                            // that it did not insert.
-                            Log.i(TAG, "Failed to delete today's step count data.");
-                        }
-                    }
-                });
-        // [END delete_dataset]
-    }
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
@@ -365,10 +231,10 @@ public class MainActivity extends AppCompatActivity {
     public boolean onOptionsItemSelected(MenuItem item) {
         int id = item.getItemId();
         if (id == R.id.action_delete_data) {
-            deleteData();
+            //deleteData();
             return true;
         } else if (id == R.id.action_update_data){
-            Intent intent = new Intent(MainActivity.this, MainActivity2.class);
+            Intent intent = new Intent(MainActivity.this, MainActivity.class);
             MainActivity.this.startActivity(intent);
         }
         return super.onOptionsItemSelected(item);
@@ -396,4 +262,89 @@ public class MainActivity extends AppCompatActivity {
         msgFilter.setNext(logView);
         Log.i(TAG, "Ready.");
     }
+
+    public class ReadDataTask extends AsyncTask<Void, Void, Void> {
+        protected Void doInBackground(Void... params) {
+
+            // [START build_read_data_request]
+            // Setting a start and end date using a range of 1 week before this moment.
+            Calendar cal = Calendar.getInstance();
+
+            Date now = new Date();
+            cal.setTime(now);
+            cal.set(Calendar.DAY_OF_WEEK, 1);
+
+
+            long endTime = cal.getTimeInMillis();
+            refDate = endTime;
+
+            cal.add(Calendar.WEEK_OF_YEAR, -1);
+            long startTime = cal.getTimeInMillis();
+
+            DataReadRequest prevWeek = queryFitnessData(startTime, endTime);
+
+            DataReadResult dataReadResult =
+                    Fitness.HistoryApi.readData(mClient, prevWeek).await(1, TimeUnit.MINUTES);
+
+            DataSet ds = dataReadResult.getDataSet(DataType.TYPE_WEIGHT);
+
+            float weightsSum = 0;
+            int weightsCount = 0;
+            for (DataPoint dp : ds.getDataPoints()) {
+                for(Field field : dp.getDataType().getFields()) {
+                    weightsCount++;
+                    weightsSum += dp.getValue(field).asFloat();
+                }
+            }
+            float prevAverage = (weightsCount == 0 ? 0 : weightsSum / weightsCount);
+            averageWeightPrev = prevAverage;
+            Log.i(TAG, "WeightsSum: " + weightsSum + " - WeightsCount: " + weightsCount + " - AverageWeight: " + prevAverage);
+
+
+            printData(dataReadResult);
+
+
+            endTime = startTime;
+            cal.add(Calendar.WEEK_OF_YEAR, -1);
+            startTime = cal.getTimeInMillis();
+
+            DataReadRequest weekBefore = queryFitnessData(startTime, endTime);
+
+            dataReadResult =
+                    Fitness.HistoryApi.readData(mClient, weekBefore).await(1, TimeUnit.MINUTES);
+
+            ds = dataReadResult.getDataSet(DataType.TYPE_WEIGHT);
+
+            weightsSum = 0;
+            weightsCount = 0;
+            for (DataPoint dp : ds.getDataPoints()) {
+                for(Field field : dp.getDataType().getFields()) {
+                    weightsCount++;
+                    weightsSum += dp.getValue(field).asFloat();
+                }
+            }
+
+            float beforeAverage = (weightsCount == 0 ? 0 : weightsSum / weightsCount);
+            averageWeightPrevPrev = beforeAverage;
+
+            Log.i(TAG, "WeightsSum: " + weightsSum + " - WeightsCount: " + weightsCount + " - AverageWeight: " + beforeAverage);
+
+            printData(dataReadResult);
+            Log.i(TAG, "Weight Change: " + (prevAverage - beforeAverage) + "kg");
+
+
+            updateWidget();
+            return null;
+        }
+    }
+
+    private void updateWidget() {
+        Intent i = new Intent(this, WeiWAProvider.class);
+        i.setAction(WeiWAProvider.UPDATE_ACTION);
+        i.putExtra("refDate", refDate);
+        i.putExtra("averageWeightPrev", averageWeightPrev);
+        i.putExtra("averageWeightPrevPrev", averageWeightPrevPrev);
+        sendBroadcast(i);
+    }
+
 }
